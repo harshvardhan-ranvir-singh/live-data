@@ -239,7 +239,7 @@ def highlight_ratio(val, column_name):
 
 
 
-@st.fragment
+@st.experimental_fragment
 def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
     st.write("---")
     shares = pd.read_csv("FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv")

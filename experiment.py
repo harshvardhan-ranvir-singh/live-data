@@ -122,8 +122,8 @@ def get_dataframe(ticker, exp_date_selected):
             strike_size = int(strikes[int(len(strikes) / 2) + 1]) - int(strikes[int(len(strikes) / 2)])
 
             for price in current_market_price(ticker, exchange):
-                two_percent_cmp_ce = price + 0.02 * price
-                two_percent_cmp_pe = price - 0.02 * price
+                two_percent_cmp_ce = price + 0.015 * price
+                two_percent_cmp_pe = price - 0.015 * price
                 TWO_PERCENT_MARKET_PRICE_CE = two_percent_cmp_ce
                 TWO_PERCENT_MARKET_PRICE_PE = two_percent_cmp_pe
                 break

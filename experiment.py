@@ -361,8 +361,39 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
             [{'selector': 'th', 'props': [('text-align', 'center')]}])
         output_ce = output_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        output_ce.columns = ['<div class="col_heading">'+col+'</div>' for col in output_ce.columns]
-        st.write(output_ce.to_html(escape=False), unsafe_allow_html=True)
+        responsive_css = """
+            <style>
+                @media (max-width: 600px) {
+                    table {
+                        width: 100% !important;
+                        font-size: 12px !important;
+                    }
+                    th, td {
+                        padding: 10px !important;
+                    }
+                    .col_heading {
+                        text-align: center !important;
+                        font-weight: bold;
+                    }
+                }
+                @media (min-width: 601px) {
+                    table {
+                        width: 80% !important;
+                        margin-left: auto;
+                        margin-right: auto;
+                        font-size: 14px;
+                    }
+                    .col_heading {
+                        text-align: center !important;
+                        font-weight: bold;
+                    }
+                }
+            </style>
+        """
+        # output_ce.columns = ['<div class="col_heading">'+col+'</div>' for col in output_ce.columns]
+        st.markdown(responsive_css, unsafe_allow_html=True)
+        #st.write(output_ce.to_html(escape=False), unsafe_allow_html=True)
+        st.dataframe(output_ce)
     with col2:
         # df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
         df_ce = df_ce.style.applymap(lambda val: highlight_ratio(val, 'CE Premium%'), subset=['CE Premium%'])
@@ -372,8 +403,39 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
             [{'selector': 'th', 'props': [('text-align', 'center')]}])
         df_ce = df_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        df_ce.columns = ['<div class="col_heading">' + col + '</div>' for col in df_ce.columns]
-        st.write(df_ce.to_html(escape=False), unsafe_allow_html=True)
+        responsive_css = """
+                    <style>
+                        @media (max-width: 600px) {
+                            table {
+                                width: 100% !important;
+                                font-size: 12px !important;
+                            }
+                            th, td {
+                                padding: 10px !important;
+                            }
+                            .col_heading {
+                                text-align: center !important;
+                                font-weight: bold;
+                            }
+                        }
+                        @media (min-width: 601px) {
+                            table {
+                                width: 80% !important;
+                                margin-left: auto;
+                                margin-right: auto;
+                                font-size: 14px;
+                            }
+                            .col_heading {
+                                text-align: center !important;
+                                font-weight: bold;
+                            }
+                        }
+                    </style>
+                """
+        #df_ce.columns = ['<div class="col_heading">' + col + '</div>' for col in df_ce.columns]
+        st.markdown(responsive_css, unsafe_allow_html=True)
+        #st.write(df_ce.to_html(escape=False), unsafe_allow_html=True)
+        st.dataframe(df_ce)
     with col3:
         output_pe = output_pe.rename(columns={'strikePrice': 'Strike Price',
                                               'expiryDate': 'Expiry Date',
@@ -384,8 +446,39 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
             [{'selector': 'th', 'props': [('text-align', 'center')]}])
         output_pe = output_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        output_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in output_pe.columns]
-        st.write(output_pe.to_html(escape=False), unsafe_allow_html=True)
+        responsive_css = """
+                    <style>
+                        @media (max-width: 600px) {
+                            table {
+                                width: 100% !important;
+                                font-size: 12px !important;
+                            }
+                            th, td {
+                                padding: 10px !important;
+                            }
+                            .col_heading {
+                                text-align: center !important;
+                                font-weight: bold;
+                            }
+                        }
+                        @media (min-width: 601px) {
+                            table {
+                                width: 80% !important;
+                                margin-left: auto;
+                                margin-right: auto;
+                                font-size: 14px;
+                            }
+                            .col_heading {
+                                text-align: center !important;
+                                font-weight: bold;
+                            }
+                        }
+                    </style>
+                """
+        #output_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in output_pe.columns]
+        st.markdown(responsive_css, unsafe_allow_html=True)
+        #st.write(output_pe.to_html(escape=False), unsafe_allow_html=True)
+        st.dataframe(output_pe)
     with col4:
         # df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
         df_pe = df_pe.style.applymap(lambda val: highlight_ratio(val, 'PE Premium%'), subset=['PE Premium%'])
@@ -395,8 +488,39 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
             [{'selector': 'th', 'props': [('text-align', 'center')]}])
         df_pe = df_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        df_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in df_pe.columns]
-        st.write(df_pe.to_html(escape=False), unsafe_allow_html=True)
+        responsive_css = """
+                            <style>
+                                @media (max-width: 600px) {
+                                    table {
+                                        width: 100% !important;
+                                        font-size: 12px !important;
+                                    }
+                                    th, td {
+                                        padding: 10px !important;
+                                    }
+                                    .col_heading {
+                                        text-align: center !important;
+                                        font-weight: bold;
+                                    }
+                                }
+                                @media (min-width: 601px) {
+                                    table {
+                                        width: 80% !important;
+                                        margin-left: auto;
+                                        margin-right: auto;
+                                        font-size: 14px;
+                                    }
+                                    .col_heading {
+                                        text-align: center !important;
+                                        font-weight: bold;
+                                    }
+                                }
+                            </style>
+                        """
+        #df_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in df_pe.columns]
+        st.markdown(responsive_css, unsafe_allow_html=True)
+        #st.write(df_pe.to_html(escape=False), unsafe_allow_html=True)
+        st.dataframe(df_pe)
 
 
 

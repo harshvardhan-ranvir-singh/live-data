@@ -12,7 +12,7 @@ import warnings
 
 warnings.simplefilter('ignore')
 
-st.set_page_config(page_title="Dashboard", layout="wide")
+st.set_page_config(page_title="Dashboard", layout="wide", menu_items = None)
 
 hide_github_icon = """
 #GithubIcon {

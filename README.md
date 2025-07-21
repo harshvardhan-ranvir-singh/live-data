@@ -24,10 +24,10 @@ Lot size and contract value calculations
 
 🎯 Option Analysis Matrix
 The system calculates four key metrics for both Call (CE) and Put (PE) options:
-CE Premium%: Call option premium as percentage of stock price
-CE (Premium+SP)%: Call premium + strike price difference as percentage
-PE Premium%: Put option premium as percentage of stock price
-PE (Premium+SP)%: Put premium + strike price difference as percentage
+  1. CE Premium%: Call option premium as percentage of stock price
+  2. CE (Premium+SP)%: Call premium + strike price difference as percentage
+  3.PE Premium%: Put option premium as percentage of stock price
+  4. PE (Premium+SP)%: Put premium + strike price difference as percentage
 
 🔍 Filtering System
 Interactive filters (0-10 range) for each metric

@@ -36,58 +36,57 @@ Separate tables for CE and PE options
 ****************************************************************
 📁 Data Files
 
-FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv
-
-  Contains 183 F&O stocks with their lot sizes
+1. FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv : Contains 183 F&O stocks with their lot sizes
   Used as dropdown for stock selection
 
-history.csv
-  Tracks user selections across sessions
-  Stores last 3 table configurations
-  Maintains history for persistence
+2. history.csv: Tracks user selections across sessions. Stores last 3 table configurations. Maintains history for persistence
+  
 
-lot_size.csv
-  Duplicate lot size data (appears redundant)
+3. lot_size.csv: Duplicate lot size data (appears redundant)
 *************************************************************************************
 User Interface
 
 Multi-Table Dashboard
 3 independent analysis tables (fragments)
 Each table has:
-Stock selector dropdown
-Expiry date selector
-Live market data display
+  1. Stock selector dropdown
+  2. Expiry date selector
+  3. Live market data display
 
 4-column layout showing:
-CE options data (green background)
-CE analysis matrix (with highlighting)
-PE options data (antique white background)
-PE analysis matrix (with highlighting)
+  1. CE options data (green background)
+  2. CE analysis matrix (with highlighting)
+  3. PE options data (antique white background)
+  4. PE analysis matrix (with highlighting)
 
 Real-time Updates:
-Live timestamp display
-Responsive design for mobile/desktop
-Auto-refresh capabilities
+  1. Live timestamp display
+  2. Responsive design for mobile/desktop
+  3. Auto-refresh capabilities
 **************************************************
 🔧 Technical Implementation
+
 Key Functions:
-last_thursdays(): Calculates monthly expiry dates
-current_market_price(): Real-time price generator
-fifty_two_week_high_low(): Historical price analysis
-get_dataframe(): Option chain data processing
-highlight_ratio(): Conditional formatting
+  1. last_thursdays(): Calculates monthly expiry dates
+  2. current_market_price(): Real-time price generator
+  3. fifty_two_week_high_low(): Historical price analysis
+  4. get_dataframe(): Option chain data processing
+  5. highlight_ratio(): Conditional formatting
+  
 Data Processing:
-ATM (At-The-Money) strike calculation
-5 strikes above/below ATM for analysis
-Premium percentage calculations
-Strike price adjustments
+
+  1. ATM (At-The-Money) strike calculation
+  2. 5 strikes above/below ATM for analysis
+  3. Premium percentage calculations
+  4. Strike price adjustments
 ****************************************************
 💡 Use Case
+
 This is a professional trading tool designed for:
-Options traders analyzing premium structures
-Risk assessment of option positions
-Real-time market monitoring during trading hours
-Comparative analysis across multiple stocks
+  1. Options traders analyzing premium structures
+  2. Risk assessment of option positions
+  3. Real-time market monitoring during trading hours
+  4. Comparative analysis across multiple stocks
 
 *****************************************************
 🚀 How to Run

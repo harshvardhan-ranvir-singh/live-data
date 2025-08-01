@@ -2,630 +2,777 @@ import requests
 import pandas as pd
 import numpy as np
 import time
-#import xlwings as xw
-from bs4 import BeautifulSoup
+import asyncio
+import aiohttp
+import logging
+from typing import List, Tuple, Optional, Generator, Dict, Any
+from dataclasses import dataclass
+from enum import Enum
+from datetime import date, timedelta
+from calendar import monthrange
 import datetime
 import pytz
 import streamlit as st
 import csv
 import warnings
+from bs4 import BeautifulSoup
 
-warnings.simplefilter('ignore')
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Dashboard", layout="wide", menu_items = None)
+# Suppress specific warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
+# Streamlit page configuration
+st.set_page_config(page_title="Option Chain Analysis Dashboard", layout="wide", menu_items=None)
 
+# Custom CSS
+def load_custom_css():
+    return """
+    <style>
+        .block-container {
+            padding: 1rem 5rem 0rem 5rem;
+        }
+        .metric-card {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            padding: 1rem;
+            color: white;
+        }
+        .data-table {
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+    """
 
-TWO_PERCENT_MARKET_PRICE_CE = 0.0
-TWO_PERCENT_MARKET_PRICE_PE = 0.0
+st.markdown(load_custom_css(), unsafe_allow_html=True)
 
-exchange = "NSE"
-st.markdown("""
-        <style>
-               .block-container {
-                    padding-top: 1rem;
-                    padding-bottom: 0rem;
-                    padding-left: 5rem;
-                    padding-right: 5rem;
-                }
-        </style>
-        """, unsafe_allow_html=True)
+# Configuration
+@dataclass
+class Config:
+    EXCHANGE: str = "NSE"
+    PRICE_OFFSET_PERCENT: float = 0.015
+    STRIKE_RANGE: int = 5
+    REFRESH_INTERVAL: int = 5
+    CACHE_DURATION: int = 30  # seconds
 
-def last_thursdays(year):
-    exp = []
-    for month in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-        if month == 1 or month == 2 or month == 3 or month == 4 or month == 5 or month == 6 or month == 7 or month == 8 or month == 9:
-            date = f"{year}-0{month}-01"
-        if month == 10 or month == 11 or month == 12:
-            date = f"{year}-{month}-01"
+# Enums
+class HighlightThreshold(Enum):
+    PREMIUM = 1.0
+    PREMIUM_SP = 5.0
 
-        # we have a datetime series in our dataframe...
-        df_Month = pd.to_datetime(date)
+class HighlightColor(Enum):
+    PREMIUM = 'background-color: paleturquoise'
+    PREMIUM_SP = 'background-color: wheat'
+    DEFAULT = ''
 
-        # we can easily get the month's end date:
-        df_mEnd = df_Month + pd.tseries.offsets.MonthEnd(1)
+# Data classes
+@dataclass
+class PriceRange:
+    low: float
+    high: float
+    
+    def __post_init__(self):
+        if self.low > self.high:
+            raise ValueError("Low price cannot be higher than high price")
 
-        # Thursday is weekday 3, so the offset for given weekday is
-        offset = (df_mEnd.weekday() - 3) % 7
+@dataclass
+class OptionData:
+    strike_price: float
+    expiry_date: str
+    last_price: float
+    instrument_type: str
 
-        # now to get the date of the last Thursday of the month, subtract it from
-        # month end date:
-        df_Expiry = df_mEnd - pd.to_timedelta(offset, unit='D')
-        exp.append(df_Expiry.date())
+@dataclass
+class TableConfig:
+    table_number: int
+    selected_option: str
+    exp_option: str
 
-    return exp
+# Utility functions
+def get_last_thursdays(year: int) -> List[date]:
+    """Calculate the last Thursday of each month for the given year."""
+    expiry_dates = []
+    
+    for month in range(1, 13):
+        # Get the last day of the month
+        _, last_day = monthrange(year, month)
+        last_date = date(year, month, last_day)
+        
+        # Find the last Thursday
+        days_back = (last_date.weekday() - 3) % 7
+        last_thursday = last_date - timedelta(days=days_back)
+        
+        expiry_dates.append(last_thursday)
+    
+    return expiry_dates
 
+def get_future_expiry_dates() -> Tuple[List[str], str]:
+    """Get future expiry dates and default expiry option."""
+    today = datetime.date.today()
+    current_year = today.year
+    
+    # Get all expiry dates for current year
+    expiry_dates = get_last_thursdays(current_year)
+    
+    # Filter future dates and format
+    future_dates = [
+        date_obj.strftime('%d-%m-%Y')
+        for date_obj in expiry_dates
+        if (date_obj - today).days >= 0
+    ]
+    
+    # If no future dates in current year, get next year
+    if not future_dates:
+        next_year_dates = get_last_thursdays(current_year + 1)
+        future_dates = [
+            date_obj.strftime('%d-%m-%Y')
+            for date_obj in next_year_dates
+            if (date_obj - today).days >= 0
+        ]
+    
+    default_expiry = future_dates[0] if future_dates else "31-12-2025"
+    
+    return future_dates, default_expiry
 
-today_year = datetime.datetime.now().year
-exp_date_list = last_thursdays(today_year)
-DATE_LIST = []
-TODAY = datetime.date.today()
-for i in range(len(exp_date_list)):
-    x = (exp_date_list[i] - TODAY).days
-    if x >= 0:
-        DATE_LIST.append(exp_date_list[i].strftime('%d-%m-%Y'))
-EXP_OPTION = DATE_LIST[0]
+# Initialize global variables
+DATE_LIST, EXP_OPTION = get_future_expiry_dates()
 
-
-def current_market_price(ticker, exchange):
-    url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
-
-    for _ in range(1000000):
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        class1 = "YMlKec fxKbKc"
-
-        price = float(soup.find(class_=class1).text.strip()[1:].replace(",", ""))
-        yield price
-
-        time.sleep(5)
-
-def fifty_two_week_high_low(ticker, exchange):
-    url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
-
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    class1 = "P6K39c"
-
-    price = soup.find_all(class_=class1)[2].text
-    low_52_week = float(price.split("-")[0].strip()[1:].replace(",", ""))
-    high_52_week = float(price.split("-")[1].strip()[1:].replace(",", ""))
-    return low_52_week, high_52_week
-
-
-def get_dataframe(ticker, exp_date_selected):
-    while True:
+# Market Data Provider
+class MarketDataProvider:
+    def __init__(self):
+        self.session = None
+        self.price_cache = {}
+        self.cache_duration = Config.CACHE_DURATION
+    
+    async def get_current_price(self, ticker: str, exchange: str) -> Optional[float]:
+        """Get current market price with caching and error handling."""
+        cache_key = f"{ticker}:{exchange}"
+        
+        # Check cache first
+        if cache_key in self.price_cache:
+            timestamp, price = self.price_cache[cache_key]
+            if (datetime.datetime.now() - timestamp).seconds < self.cache_duration:
+                return price
+        
         try:
-            headers = {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-
-            main_url = "https://www.nseindia.com/"
-            response = requests.get(main_url, headers=headers)
-            cookies = response.cookies
-
-            url = f"https://www.nseindia.com/api/option-chain-equities?symbol={ticker}"
-            option_chain_data = requests.get(url, headers=headers, cookies=cookies)
-
-            data = option_chain_data.json()["records"]["data"]
-            ocdata = []
-
-            for i in data:
-                for j, k in i.items():
-                    if j == "CE" or j == "PE":
-                        info = k
-                        info["instrumentType"] = j
-                        ocdata.append(info)
-
-            df = pd.DataFrame(ocdata)
-
-
-
-            strikes = df.strikePrice.unique().tolist()
-            strike_size = int(strikes[int(len(strikes) / 2) + 1]) - int(strikes[int(len(strikes) / 2)])
-
-            for price in current_market_price(ticker, exchange):
-                two_percent_cmp_ce = price + 0.015 * price
-                two_percent_cmp_pe = price - 0.015 * price
-                TWO_PERCENT_MARKET_PRICE_CE = two_percent_cmp_ce
-                TWO_PERCENT_MARKET_PRICE_PE = two_percent_cmp_pe
-                break
-
-            print(TWO_PERCENT_MARKET_PRICE_CE, TWO_PERCENT_MARKET_PRICE_PE)
-
-            # access dataframe for atm price
-            atm_ce = int(round(TWO_PERCENT_MARKET_PRICE_CE / strike_size, 0) * strike_size)
-            print(atm_ce)
-
-            output_ce = pd.DataFrame()
-
-            atm_pe = int(round(TWO_PERCENT_MARKET_PRICE_PE / strike_size, 0) * strike_size)
-            output_pe = pd.DataFrame()
-
-            for _ in range(5):
-
-                # (for ce)
-                ab = True
-                while ab:
-
-                    fd = df[df['strikePrice'] == atm_ce]
-
-                    if fd.empty:
-                        print("empty df ce", atm_ce)
-                        atm_ce = atm_ce + 0.5
-                        if atm_ce > strikes[-1]:
-                            break
-                    else:
-                        ab = False
-
-                # print(fd)
-
-                # (for pe)
-                ab_pe = True
-                while ab_pe:
-
-                    fd_pe = df[df['strikePrice'] == atm_pe]
-
-                    if fd_pe.empty:
-                        print("empty df pe", atm_pe)
-                        atm_pe = atm_pe - 0.5
-                    else:
-                        ab_pe = False
-
-                # print(fd_pe)
-
-                # (for ce)convert expiry date in particular format
-                fd = fd.reset_index()
-                for i in range(len(fd)):
-                    expiry_date_str = fd["expiryDate"].iloc[i]
-                    temp_expiry = datetime.datetime.strptime(expiry_date_str, '%d-%b-%Y')
-                    result_expiry = temp_expiry.strftime('%d-%m-%Y')
-                    fd.at[i, "expiryDate"] = result_expiry
-                # print(fd)
-                # print(type(fd["expiryDate"].iloc[0]))
-
-                # (for pe) convert expiry date in particular format
-                fd_pe = fd_pe.reset_index()
-                for i in range(len(fd_pe)):
-                    expiry_date_str_pe = fd_pe["expiryDate"].iloc[i]
-                    temp_expiry_pe = datetime.datetime.strptime(expiry_date_str_pe, '%d-%b-%Y')
-                    result_expiry_pe = temp_expiry_pe.strftime('%d-%m-%Y')
-                    fd_pe.at[i, "expiryDate"] = result_expiry_pe
-
-                adjusted_expiry = exp_date_selected
-                adjusted_expiry_pe = exp_date_selected
-
-                # (subset_ce (CE))
-                subset_ce = fd[(fd.instrumentType == "CE") & (fd.expiryDate == adjusted_expiry)]
-                # print(subset_ce)
-                output_ce = pd.concat([output_ce, subset_ce])
-
-                # (subset_pe (PE))
-                subset_pe = fd_pe[(fd_pe.instrumentType == "PE") & (fd_pe.expiryDate == adjusted_expiry_pe)]
-                # print(subset_pe)
-                output_pe = pd.concat([output_pe, subset_pe])
-
-                # (for CE)
-                atm_ce += strike_size
-
-                # (for PE)
-                atm_pe -= strike_size
-
-            output_ce = output_ce[["strikePrice", "expiryDate", "lastPrice", "instrumentType"]]
-            output_pe = output_pe[["strikePrice", "expiryDate", "lastPrice", "instrumentType"]]
-
-            output_ce.reset_index(drop=True, inplace=True)
-            output_pe.reset_index(drop=True, inplace=True)
-
-            return output_ce, output_pe
-
-        except Exception as e:
-            pass
-
-
-def highlight_ratio(val, column_name):
-    if column_name == "CE Premium%":
-        color = 'background-color: paleturquoise' if val > 1 else ""
-        return color
-    if column_name == "CE (Premium+SP)%":
-        color = 'background-color: wheat' if val > 5 else ""
-        return color
-    if column_name == "PE Premium%":
-        color = 'background-color: paleturquoise' if val > 1 else ""
-        return color
-    if column_name == "PE (Premium+SP)%":
-        color = 'background-color: wheat' if val > 5 else ""
-        return color
-
-
-
-
-
-
-@st.fragment
-def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
-    st.write("---")
-    shares = pd.read_csv("FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv")
-    share_list = list(shares["Symbol"])
-    selected_option = selected_option.strip()
-    share_list.remove(selected_option)
-    share_list = [selected_option] + share_list
-
-    exp_date_list_sel = DATE_LIST.copy()
-    print("LIST: ", exp_date_list_sel)
-
-    print("EXP_OPTION:", (exp_option))
-
-    print(type(exp_option))
-    print(type(exp_date_list_sel[0]),exp_date_list_sel)
-
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown('##### Share List')
-        selected_option = st.selectbox(label="Select Stock", options=share_list, key="share_list" + str(table_number), label_visibility='collapsed')
-        lot_size = shares[shares["Symbol"] == selected_option]['Jun-24'].item()
-    with c2:
-        st.markdown('##### Expiry List')
-        exp_option = st.selectbox(label="Select Expiry", options=exp_date_list_sel, key="exp_list" + str(table_number), label_visibility='collapsed')
-        if selected_option in share_list:
-            try:
-                ticker = selected_option
-                output_ce, output_pe = get_dataframe(ticker, exp_option)
-                ########################################## Stock LTP and Matrix #######################################
-                stock_ltp = 0.0
-                for price in current_market_price(ticker, exchange):
-                    stock_ltp = price
-                    break
-                low_52_week, high_52_week = fifty_two_week_high_low(ticker, exchange)
-            except Exception as e:
-                st.error(f"Error fetching data for {selected_option}: {str(e)}")
-                # Set default values
-                stock_ltp = 0.0
-                low_52_week = 0.0
-                high_52_week = 0.0
-                output_ce = pd.DataFrame()
-                output_pe = pd.DataFrame()
-
-        # ********************************** MATRIX ******************************************
-        try:
-            l1, l2 = len(output_ce), len(output_pe)
-            if l1 < l2:
-                fin_len = l1
-            else:
-                fin_len = l2
+            url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
             
-            if fin_len > 0 and stock_ltp > 0:
-                matrix = np.zeros((fin_len, 4))
-                df = pd.DataFrame(matrix, columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
-
-                for i in range(len(df)):
-                    if i < len(output_ce) and i < len(output_pe):
-                        df.at[i, "CE Premium%"] = round((output_ce["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
-                        df.at[i, "CE (Premium+SP)%"] = round(
-                            (((output_ce["strikePrice"].iloc[i] - stock_ltp) + output_ce["lastPrice"].iloc[i]) / stock_ltp) * 100,
-                            2)
-                        df.at[i, "PE Premium%"] = round((output_pe["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
-                        df.at[i, "PE (Premium+SP)%"] = round(
-                            (((stock_ltp - output_pe["strikePrice"].iloc[i]) + output_pe["lastPrice"].iloc[i]) / stock_ltp) * 100,
-                            2)
-            else:
-                # Create empty dataframe if no data
-                df = pd.DataFrame(columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Try multiple CSS selectors for robustness
+                    price_selectors = [
+                        "YMlKec fxKbKc",
+                        "fxKbKc",
+                        "[data-last-price]"
+                    ]
+                    
+                    for selector in price_selectors:
+                        element = soup.find(class_=selector)
+                        if element:
+                            price_text = element.text.strip()
+                            if price_text.startswith('₹'):
+                                price = float(price_text[1:].replace(",", ""))
+                                self.price_cache[cache_key] = (datetime.datetime.now(), price)
+                                return price
+                    
+                    raise ValueError(f"Price not found for {ticker}")
+                else:
+                    raise Exception(f"HTTP {response.status}")
+                    
         except Exception as e:
-            st.error(f"Error calculating matrix: {str(e)}")
-            df = pd.DataFrame(columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
-        # ************************************************************************************
-    d1, d2, d3, d4, d5, d6 = st.columns(6)
-    with d1:
-        st.markdown('##### CMP:  ' + str(stock_ltp))
-    with d2:
-        st.markdown('##### Lot Size:  ' + str(lot_size))
-    with d3:
-        st.markdown('##### Contract Value:  ' + str(lot_size*stock_ltp))
-    with d4:
-        st.markdown('##### Time:  ' + datetime.datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%H:%M:%S"))
-    with d5:
-        st.markdown('##### 52 week low:  ' + str(low_52_week))
-    with d6:
-        st.markdown('##### 52 week high:  ' + str(high_52_week))
+            logger.error(f"Error fetching price for {ticker}: {str(e)}")
+            return None
 
+    def get_current_price_sync(self, ticker: str, exchange: str) -> Optional[float]:
+        """Synchronous version for compatibility."""
+        try:
+            url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            element = soup.find(class_="YMlKec fxKbKc")
+            
+            if element:
+                price_text = element.text.strip()
+                if price_text.startswith('₹'):
+                    price = float(price_text[1:].replace(",", ""))
+                    return price
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching price for {ticker}: {str(e)}")
+            return None
 
-
-    filters = st.columns(4)
-    values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    ls = []
-    n=1
-    with filters[1]:
-        nested_filters = st.columns(2)
-        ind = 0
-        for column in df.columns.tolist()[:2]:
-            with nested_filters[ind]:
-                ls.append(st.selectbox(
-                                f'Filter {column}',
-                                values,
-                                key='filter_list' + str(n) + "table" + str(table_number)
-
-                            ))
-                n += 1
-                ind += 1
-    with filters[3]:
-        nested_filters = st.columns(2)
-        ind = 0
-        for column in df.columns.tolist()[2:]:
-            with nested_filters[ind]:
-                ls.append(st.selectbox(
-                            f'Filter {column}',
-                            values,
-                            key='filter_list' + str(n) + "table" + str(table_number)
-
-                            ))
-                n += 1
-                ind += 1
-
-
-    col1, col2, col3, col4 = st.columns(4)
+# 52-week range functions
+def get_52_week_range(ticker: str, exchange: str) -> PriceRange:
+    """Get 52-week high/low prices with robust error handling."""
     try:
-        df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
-        df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
-        df_ce = df_ce[(df_ce['CE Premium%'] >= ls[0]) & (df_ce['CE (Premium+SP)%'] >= ls[1])]
-        df_pe = df_pe[(df_pe['PE Premium%'] >= ls[2]) & (df_pe['PE (Premium+SP)%'] >= ls[3])]
-        #df = df[(df['CE Premium%'] >= ls[0]) & (df['CE (Premium+SP)%'] >= ls[1]) & (df['PE Premium%'] >= ls[2]) & (df['PE (Premium+SP)%'] >= ls[3])]
-        df_ce_index = df_ce.index
-        output_ce = output_ce.loc[df_ce_index]
-        df_pe_index = df_pe.index
-        output_pe = output_pe.loc[df_pe_index]
-    except Exception as e:
-        st.error(f"Error filtering data: {str(e)}")
-        df_ce = pd.DataFrame(columns=['CE Premium%', 'CE (Premium+SP)%'])
-        df_pe = pd.DataFrame(columns=['PE Premium%', 'PE (Premium+SP)%'])
-        output_ce = pd.DataFrame()
-        output_pe = pd.DataFrame()
-    with col1:
-        try:
-            if not output_ce.empty:
-                output_ce = output_ce.rename(columns={'strikePrice': 'Strike Price',
-                                                      'expiryDate': 'Expiry Date',
-                                                      'lastPrice': 'Last Price',
-                                                      'instrumentType': 'Type'})
-                output_ce = output_ce.style.set_properties(**{'text-align': 'center', 'background-color': 'palegreen'}).set_table_styles(
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
-                output_ce = output_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
-            else:
-                output_ce = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
-        except Exception as e:
-            st.error(f"Error displaying CE data: {str(e)}")
-            output_ce = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
-        st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        responsive_css = """
-            <style>
-                @media (max-width: 600px) {
-                    table {
-                        width: 100% !important;
-                        font-size: 12px !important;
-                    }
-                    th, td {
-                        padding: 10px !important;
-                    }
-                    .col_heading {
-                        text-align: center !important;
-                        font-weight: bold;
-                    }
-                }
-                @media (min-width: 601px) {
-                    table {
-                        width: 80% !important;
-                        margin-left: auto;
-                        margin-right: auto;
-                        font-size: 14px;
-                    }
-                    .col_heading {
-                        text-align: center !important;
-                        font-weight: bold;
-                    }
-                }
-            </style>
-        """
-        # output_ce.columns = ['<div class="col_heading">'+col+'</div>' for col in output_ce.columns]
-        st.markdown(responsive_css, unsafe_allow_html=True)
-        #st.write(output_ce.to_html(escape=False), unsafe_allow_html=True)
-        st.dataframe(output_ce)
-    with col2:
-        try:
-            if not df_ce.empty:
-                # df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
-                df_ce = df_ce.style.applymap(lambda val: highlight_ratio(val, 'CE Premium%'), subset=['CE Premium%'])
-                df_ce = df_ce.applymap(lambda val: highlight_ratio(val, 'CE (Premium+SP)%'), subset=['CE (Premium+SP)%'])
-                df_ce = df_ce.set_properties(
-                    **{'text-align': 'center'}).set_table_styles(
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
-                df_ce = df_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
-        except Exception as e:
-            st.error(f"Error displaying CE premium data: {str(e)}")
-            df_ce = pd.DataFrame(columns=['CE Premium%', 'CE (Premium+SP)%'])
-        st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        responsive_css = """
-                    <style>
-                        @media (max-width: 600px) {
-                            table {
-                                width: 100% !important;
-                                font-size: 12px !important;
-                            }
-                            th, td {
-                                padding: 10px !important;
-                            }
-                            .col_heading {
-                                text-align: center !important;
-                                font-weight: bold;
-                            }
-                        }
-                        @media (min-width: 601px) {
-                            table {
-                                width: 80% !important;
-                                margin-left: auto;
-                                margin-right: auto;
-                                font-size: 14px;
-                            }
-                            .col_heading {
-                                text-align: center !important;
-                                font-weight: bold;
-                            }
-                        }
-                    </style>
-                """
-        #df_ce.columns = ['<div class="col_heading">' + col + '</div>' for col in df_ce.columns]
-        st.markdown(responsive_css, unsafe_allow_html=True)
-        #st.write(df_ce.to_html(escape=False), unsafe_allow_html=True)
-        st.dataframe(df_ce)
-    with col3:
-        try:
-            if not output_pe.empty:
-                output_pe = output_pe.rename(columns={'strikePrice': 'Strike Price',
-                                                      'expiryDate': 'Expiry Date',
-                                                      'lastPrice': 'Last Price',
-                                                      'instrumentType': 'Type'})
-                output_pe = output_pe.style.set_properties(
-                    **{'text-align': 'center', 'background-color': 'antiquewhite'}).set_table_styles(
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
-                output_pe = output_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
-            else:
-                output_pe = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
-        except Exception as e:
-            st.error(f"Error displaying PE data: {str(e)}")
-            output_pe = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
-        st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        responsive_css = """
-                    <style>
-                        @media (max-width: 600px) {
-                            table {
-                                width: 100% !important;
-                                font-size: 12px !important;
-                            }
-                            th, td {
-                                padding: 10px !important;
-                            }
-                            .col_heading {
-                                text-align: center !important;
-                                font-weight: bold;
-                            }
-                        }
-                        @media (min-width: 601px) {
-                            table {
-                                width: 80% !important;
-                                margin-left: auto;
-                                margin-right: auto;
-                                font-size: 14px;
-                            }
-                            .col_heading {
-                                text-align: center !important;
-                                font-weight: bold;
-                            }
-                        }
-                    </style>
-                """
-        #output_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in output_pe.columns]
-        st.markdown(responsive_css, unsafe_allow_html=True)
-        #st.write(output_pe.to_html(escape=False), unsafe_allow_html=True)
-        st.dataframe(output_pe)
-    with col4:
-        try:
-            if not df_pe.empty:
-                # df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
-                df_pe = df_pe.style.applymap(lambda val: highlight_ratio(val, 'PE Premium%'), subset=['PE Premium%'])
-                df_pe = df_pe.applymap(lambda val: highlight_ratio(val, 'PE (Premium+SP)%'), subset=['PE (Premium+SP)%'])
-                df_pe = df_pe.set_properties(
-                    **{'text-align': 'center'}).set_table_styles(
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
-                df_pe = df_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
-        except Exception as e:
-            st.error(f"Error displaying PE premium data: {str(e)}")
-            df_pe = pd.DataFrame(columns=['PE Premium%', 'PE (Premium+SP)%'])
-        st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
-        responsive_css = """
-                            <style>
-                                @media (max-width: 600px) {
-                                    table {
-                                        width: 100% !important;
-                                        font-size: 12px !important;
-                                    }
-                                    th, td {
-                                        padding: 10px !important;
-                                    }
-                                    .col_heading {
-                                        text-align: center !important;
-                                        font-weight: bold;
-                                    }
-                                }
-                                @media (min-width: 601px) {
-                                    table {
-                                        width: 80% !important;
-                                        margin-left: auto;
-                                        margin-right: auto;
-                                        font-size: 14px;
-                                    }
-                                    .col_heading {
-                                        text-align: center !important;
-                                        font-weight: bold;
-                                    }
-                                }
-                            </style>
-                        """
-        #df_pe.columns = ['<div class="col_heading">' + col + '</div>' for col in df_pe.columns]
-        st.markdown(responsive_css, unsafe_allow_html=True)
-        #st.write(df_pe.to_html(escape=False), unsafe_allow_html=True)
-        st.dataframe(df_pe)
-
-
-
-    try:
-        if ('share_list2' in st.session_state) and ('share_list3' in st.session_state):
-            curr = pd.DataFrame({'table1': [st.session_state["share_list1"]],
-                                 'exp1': [st.session_state["exp_list1"]],
-                                 'table2': [st.session_state["share_list2"]],
-                                 'exp2': [st.session_state["exp_list2"]],
-                                 'table3': [st.session_state["share_list3"]],
-                                 'exp3': [st.session_state["exp_list3"]],
-                                 'timestamp': [datetime.datetime.now()]
-                                 })
-            if len(hist_df) > 30:
-                curr.to_csv('history.csv', mode='w', index=False, header=True)
-            else:
-                curr.to_csv('history.csv', mode='a', index=False, header=False)
-    except Exception as e:
-        st.error(f"Error saving history: {str(e)}")
-    st.write("---")
-st.markdown('## LIVE OPTION CHAIN ANALYSIS (OPTSTK)')
-try:
-    hist = pd.read_csv("history.csv")
-    hist_df = pd.DataFrame(hist)
-    print(len(hist_df))
-except Exception as e:
-    st.error(f"Error loading history: {str(e)}")
-    hist_df = pd.DataFrame()
-    print("Created empty history dataframe")
-
-if len(hist_df) > 1:
-    last_rec = hist_df.tail(1)
-    print(last_rec)
-    try:
-        # Check if the expiry date from history is valid for current dates
-        hist_exp1 = last_rec['exp1'].item()
-        hist_exp2 = last_rec['exp2'].item()
-        hist_exp3 = last_rec['exp3'].item()
+        url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         
-        # Use history data if dates are valid, otherwise use defaults
-        exp1 = hist_exp1 if hist_exp1 in DATE_LIST else EXP_OPTION
-        exp2 = hist_exp2 if hist_exp2 in DATE_LIST else EXP_OPTION
-        exp3 = hist_exp3 if hist_exp3 in DATE_LIST else EXP_OPTION
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        frag_table(1, last_rec['table1'].item(), exp1)
-        frag_table(2, last_rec['table2'].item(), exp2)
-        frag_table(3, last_rec['table3'].item(), exp3)
+        # Try multiple selectors for 52-week range
+        range_selectors = [
+            "P6K39c",
+            "[data-52-week-range]",
+            ".range-data"
+        ]
+        
+        for selector in range_selectors:
+            elements = soup.find_all(class_=selector)
+            for element in elements:
+                text = element.text.strip()
+                if "-" in text and "₹" in text:
+                    # Parse range like "₹1,000 - ₹2,000"
+                    parts = text.split("-")
+                    if len(parts) == 2:
+                        low_str = parts[0].strip().replace("₹", "").replace(",", "")
+                        high_str = parts[1].strip().replace("₹", "").replace(",", "")
+                        
+                        try:
+                            low = float(low_str)
+                            high = float(high_str)
+                            return PriceRange(low, high)
+                        except ValueError:
+                            continue
+        
+        raise ValueError(f"52-week range not found for {ticker}")
+        
     except Exception as e:
-        print(f"Error loading history: {e}")
-        frag_table(1, 'RELIANCE')
-        frag_table(2, 'VEDL')
-        frag_table(3, 'INFY')
-else:
-    frag_table(1, 'RELIANCE')
-    frag_table(2, 'VEDL')
-    frag_table(3, 'INFY')
+        logger.error(f"Error fetching 52-week range for {ticker}: {str(e)}")
+        return PriceRange(0.0, 0.0)
+
+# Highlighting functions
+def get_highlight_style(value: float, column_name: str) -> str:
+    """Get highlight style based on value and column type."""
+    if not isinstance(value, (int, float)):
+        return HighlightColor.DEFAULT.value
+    
+    # Define highlighting rules
+    highlight_rules = {
+        "CE Premium%": (HighlightThreshold.PREMIUM.value, HighlightColor.PREMIUM.value),
+        "PE Premium%": (HighlightThreshold.PREMIUM.value, HighlightColor.PREMIUM.value),
+        "CE (Premium+SP)%": (HighlightThreshold.PREMIUM_SP.value, HighlightColor.PREMIUM_SP.value),
+        "PE (Premium+SP)%": (HighlightThreshold.PREMIUM_SP.value, HighlightColor.PREMIUM_SP.value),
+    }
+    
+    threshold, color = highlight_rules.get(column_name, (0, HighlightColor.DEFAULT.value))
+    return color if value > threshold else HighlightColor.DEFAULT.value
+
+# Option Chain Processor
+class OptionChainProcessor:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def _get_nse_cookies(self) -> dict:
+        """Get NSE cookies for API access."""
+        try:
+            response = self.session.get("https://www.nseindia.com/")
+            return response.cookies
+        except Exception as e:
+            logger.error(f"Error getting NSE cookies: {e}")
+            return {}
+    
+    def _fetch_option_chain_data(self, ticker: str) -> Optional[dict]:
+        """Fetch option chain data from NSE API."""
+        try:
+            cookies = self._get_nse_cookies()
+            url = f"https://www.nseindia.com/api/option-chain-equities?symbol={ticker}"
+            
+            response = self.session.get(url, cookies=cookies, timeout=15)
+            response.raise_for_status()
+            
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error fetching option chain for {ticker}: {e}")
+            return None
+    
+    def _process_option_data(self, raw_data: dict) -> pd.DataFrame:
+        """Process raw option chain data into structured format."""
+        option_data = []
+        
+        for record in raw_data.get("records", {}).get("data", []):
+            for option_type, data in record.items():
+                if option_type in ["CE", "PE"]:
+                    data["instrumentType"] = option_type
+                    option_data.append(data)
+        
+        return pd.DataFrame(option_data)
+    
+    def _calculate_atm_strikes(self, df: pd.DataFrame, current_price: float) -> Tuple[float, float]:
+        """Calculate ATM strikes for CE and PE options."""
+        strikes = sorted(df['strikePrice'].unique())
+        if len(strikes) < 2:
+            return current_price, current_price
+        
+        strike_size = strikes[1] - strikes[0]
+        
+        # Calculate 2% above and below current price
+        ce_target = current_price * (1 + Config.PRICE_OFFSET_PERCENT)
+        pe_target = current_price * (1 - Config.PRICE_OFFSET_PERCENT)
+        
+        # Find nearest strikes
+        atm_ce = round(ce_target / strike_size) * strike_size
+        atm_pe = round(pe_target / strike_size) * strike_size
+        
+        return atm_ce, atm_pe
+    
+    def _get_strikes_range(self, df: pd.DataFrame, atm_strike: float, 
+                          strike_size: float, is_ce: bool = True) -> List[float]:
+        """Get range of strikes around ATM."""
+        strikes = []
+        current_strike = atm_strike
+        
+        for _ in range(Config.STRIKE_RANGE):
+            if current_strike in df['strikePrice'].values:
+                strikes.append(current_strike)
+            
+            if is_ce:
+                current_strike += strike_size
+            else:
+                current_strike -= strike_size
+        
+        return strikes
+    
+    def _format_expiry_date(self, date_str: str) -> str:
+        """Convert expiry date format."""
+        try:
+            parsed_date = datetime.datetime.strptime(date_str, '%d-%b-%Y')
+            return parsed_date.strftime('%d-%m-%Y')
+        except ValueError:
+            return date_str
+    
+    def get_option_chain(self, ticker: str, expiry_date: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Main method to get processed option chain data."""
+        # Fetch raw data
+        raw_data = self._fetch_option_chain_data(ticker)
+        if not raw_data:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Process data
+        df = self._process_option_data(raw_data)
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Get current price
+        market_data = MarketDataProvider()
+        current_price = market_data.get_current_price_sync(ticker, Config.EXCHANGE)
+        if not current_price:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Calculate ATM strikes
+        atm_ce, atm_pe = self._calculate_atm_strikes(df, current_price)
+        
+        # Get strike ranges
+        ce_strikes = self._get_strikes_range(df, atm_ce, df['strikePrice'].diff().median(), True)
+        pe_strikes = self._get_strikes_range(df, atm_pe, df['strikePrice'].diff().median(), False)
+        
+        # Filter and process CE options
+        ce_data = df[
+            (df['strikePrice'].isin(ce_strikes)) & 
+            (df['instrumentType'] == 'CE') &
+            (df['expiryDate'].apply(self._format_expiry_date) == expiry_date)
+        ].copy()
+        
+        # Filter and process PE options
+        pe_data = df[
+            (df['strikePrice'].isin(pe_strikes)) & 
+            (df['instrumentType'] == 'PE') &
+            (df['expiryDate'].apply(self._format_expiry_date) == expiry_date)
+        ].copy()
+        
+        # Select required columns
+        columns = ["strikePrice", "expiryDate", "lastPrice", "instrumentType"]
+        ce_data = ce_data[columns].reset_index(drop=True)
+        pe_data = pe_data[columns].reset_index(drop=True)
+        
+        return ce_data, pe_data
+
+# Dashboard Component
+class OptionChainDashboard:
+    def __init__(self):
+        self.stocks_data = self._load_stocks_data()
+        self.processor = OptionChainProcessor()
+    
+    def _load_stocks_data(self) -> pd.DataFrame:
+        """Load stocks data from CSV."""
+        try:
+            return pd.read_csv("FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv")
+        except Exception as e:
+            st.error(f"Error loading stocks data: {e}")
+            return pd.DataFrame()
+    
+    def _get_stock_list(self, selected_option: str) -> List[str]:
+        """Get stock list with selected option at the top."""
+        if self.stocks_data.empty:
+            return [selected_option]
+        
+        stock_list = self.stocks_data["Symbol"].tolist()
+        if selected_option in stock_list:
+            stock_list.remove(selected_option)
+        
+        return [selected_option] + stock_list
+    
+    def _create_controls(self, config: TableConfig) -> Tuple[str, str, int]:
+        """Create UI controls for stock and expiry selection."""
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown('##### Share List')
+            selected_stock = st.selectbox(
+                label="Select Stock",
+                options=self._get_stock_list(config.selected_option),
+                key=f"share_list{config.table_number}",
+                label_visibility='collapsed'
+            )
+            
+            # Get lot size
+            lot_size = 1
+            if not self.stocks_data.empty:
+                stock_data = self.stocks_data[self.stocks_data["Symbol"] == selected_stock]
+                if not stock_data.empty:
+                    lot_size = stock_data['Jun-24'].iloc[0]
+        
+        with col2:
+            st.markdown('##### Expiry List')
+            expiry_date = st.selectbox(
+                label="Select Expiry",
+                options=DATE_LIST,
+                key=f"exp_list{config.table_number}",
+                label_visibility='collapsed'
+            )
+        
+        return selected_stock, expiry_date, lot_size
+    
+    def _fetch_market_data(self, ticker: str) -> Tuple[float, float, float]:
+        """Fetch market data for a ticker."""
+        try:
+            # Get current price
+            market_data = MarketDataProvider()
+            current_price = market_data.get_current_price_sync(ticker, Config.EXCHANGE)
+            
+            # Get 52-week range
+            price_range = get_52_week_range(ticker, Config.EXCHANGE)
+            
+            return current_price or 0.0, price_range.low, price_range.high
+            
+        except Exception as e:
+            st.error(f"Error fetching market data for {ticker}: {str(e)}")
+            return 0.0, 0.0, 0.0
+    
+    def _calculate_premium_matrix(self, ce_data: pd.DataFrame, pe_data: pd.DataFrame, 
+                                current_price: float) -> pd.DataFrame:
+        """Calculate premium percentage matrix."""
+        if ce_data.empty or pe_data.empty or current_price <= 0:
+            return pd.DataFrame(columns=["CE Premium%", "CE (Premium+SP)%", 
+                                       "PE Premium%", "PE (Premium+SP)%"])
+        
+        # Calculate matrix size
+        matrix_size = min(len(ce_data), len(pe_data))
+        
+        matrix_data = []
+        for i in range(matrix_size):
+            ce_price = ce_data.iloc[i]["lastPrice"]
+            pe_price = pe_data.iloc[i]["lastPrice"]
+            ce_strike = ce_data.iloc[i]["strikePrice"]
+            pe_strike = pe_data.iloc[i]["strikePrice"]
+            
+            row = {
+                "CE Premium%": round((ce_price / current_price) * 100, 2),
+                "CE (Premium+SP)%": round(((ce_strike - current_price + ce_price) / current_price) * 100, 2),
+                "PE Premium%": round((pe_price / current_price) * 100, 2),
+                "PE (Premium+SP)%": round(((current_price - pe_strike + pe_price) / current_price) * 100, 2)
+            }
+            matrix_data.append(row)
+        
+        return pd.DataFrame(matrix_data)
+    
+    def _create_metrics_display(self, current_price: float, lot_size: int, 
+                               low_52: float, high_52: float):
+        """Display market metrics."""
+        cols = st.columns(6)
+        
+        with cols[0]:
+            st.markdown(f'##### CMP: {current_price:.2f}')
+        with cols[1]:
+            st.markdown(f'##### Lot Size: {lot_size}')
+        with cols[2]:
+            st.markdown(f'##### Contract Value: {lot_size * current_price:.2f}')
+        with cols[3]:
+            st.markdown(f'##### Time: {datetime.datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%H:%M:%S")}')
+        with cols[4]:
+            st.markdown(f'##### 52 week low: {low_52:.2f}')
+        with cols[5]:
+            st.markdown(f'##### 52 week high: {high_52:.2f}')
+    
+    def _create_filters(self, df: pd.DataFrame, table_number: int) -> List[int]:
+        """Create filter controls."""
+        filters = st.columns(4)
+        values = list(range(11))  # 0-10
+        filter_values = []
+        
+        # CE filters
+        with filters[1]:
+            nested_cols = st.columns(2)
+            for i, col in enumerate(['CE Premium%', 'CE (Premium+SP)%']):
+                with nested_cols[i]:
+                    filter_values.append(st.selectbox(
+                        f'Filter {col}',
+                        values,
+                        key=f'filter_{table_number}_{i}'
+                    ))
+        
+        # PE filters
+        with filters[3]:
+            nested_cols = st.columns(2)
+            for i, col in enumerate(['PE Premium%', 'PE (Premium+SP)%']):
+                with nested_cols[i]:
+                    filter_values.append(st.selectbox(
+                        f'Filter {col}',
+                        values,
+                        key=f'filter_{table_number}_{i+2}'
+                    ))
+        
+        return filter_values
+    
+    def _display_ce_options_table(self, ce_data: pd.DataFrame, filtered_data: pd.DataFrame):
+        """Display CE options table."""
+        if not ce_data.empty and not filtered_data.empty:
+            display_data = ce_data.loc[filtered_data.index].copy()
+            display_data = display_data.rename(columns={
+                'strikePrice': 'Strike Price',
+                'expiryDate': 'Expiry Date',
+                'lastPrice': 'Last Price',
+                'instrumentType': 'Type'
+            })
+            
+            styled_data = display_data.style.set_properties(
+                **{'text-align': 'center', 'background-color': 'palegreen'}
+            ).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
+            
+            st.dataframe(styled_data)
+        else:
+            st.dataframe(pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type']))
+    
+    def _display_ce_premium_table(self, filtered_data: pd.DataFrame):
+        """Display CE premium table."""
+        if not filtered_data.empty:
+            styled_data = filtered_data.style.applymap(
+                lambda val: get_highlight_style(val, 'CE Premium%'), 
+                subset=['CE Premium%']
+            ).applymap(
+                lambda val: get_highlight_style(val, 'CE (Premium+SP)%'), 
+                subset=['CE (Premium+SP)%']
+            ).set_properties(**{'text-align': 'center'})
+            
+            st.dataframe(styled_data)
+        else:
+            st.dataframe(pd.DataFrame(columns=['CE Premium%', 'CE (Premium+SP)%']))
+    
+    def _display_pe_options_table(self, pe_data: pd.DataFrame, filtered_data: pd.DataFrame):
+        """Display PE options table."""
+        if not pe_data.empty and not filtered_data.empty:
+            display_data = pe_data.loc[filtered_data.index].copy()
+            display_data = display_data.rename(columns={
+                'strikePrice': 'Strike Price',
+                'expiryDate': 'Expiry Date',
+                'lastPrice': 'Last Price',
+                'instrumentType': 'Type'
+            })
+            
+            styled_data = display_data.style.set_properties(
+                **{'text-align': 'center', 'background-color': 'antiquewhite'}
+            ).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
+            
+            st.dataframe(styled_data)
+        else:
+            st.dataframe(pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type']))
+    
+    def _display_pe_premium_table(self, filtered_data: pd.DataFrame):
+        """Display PE premium table."""
+        if not filtered_data.empty:
+            styled_data = filtered_data.style.applymap(
+                lambda val: get_highlight_style(val, 'PE Premium%'), 
+                subset=['PE Premium%']
+            ).applymap(
+                lambda val: get_highlight_style(val, 'PE (Premium+SP)%'), 
+                subset=['PE (Premium+SP)%']
+            ).set_properties(**{'text-align': 'center'})
+            
+            st.dataframe(styled_data)
+        else:
+            st.dataframe(pd.DataFrame(columns=['PE Premium%', 'PE (Premium+SP)%']))
+    
+    def _create_data_tables(self, ce_data: pd.DataFrame, pe_data: pd.DataFrame,
+                           matrix_df: pd.DataFrame, filter_values: List[int]):
+        """Create the four data tables."""
+        cols = st.columns(4)
+        
+        # Apply filters
+        ce_filtered = matrix_df[
+            (matrix_df['CE Premium%'] >= filter_values[0]) & 
+            (matrix_df['CE (Premium+SP)%'] >= filter_values[1])
+        ]
+        pe_filtered = matrix_df[
+            (matrix_df['PE Premium%'] >= filter_values[2]) & 
+            (matrix_df['PE (Premium+SP)%'] >= filter_values[3])
+        ]
+        
+        # CE Options Table
+        with cols[0]:
+            self._display_ce_options_table(ce_data, ce_filtered)
+        
+        # CE Premium Table
+        with cols[1]:
+            self._display_ce_premium_table(ce_filtered)
+        
+        # PE Options Table
+        with cols[2]:
+            self._display_pe_options_table(pe_data, pe_filtered)
+        
+        # PE Premium Table
+        with cols[3]:
+            self._display_pe_premium_table(pe_filtered)
+    
+    def render_table(self, config: TableConfig):
+        """Main method to render a complete option chain table."""
+        st.write("---")
+        
+        # Create controls
+        selected_stock, expiry_date, lot_size = self._create_controls(config)
+        
+        # Fetch data
+        ce_data, pe_data = self.processor.get_option_chain(selected_stock, expiry_date)
+        current_price, low_52, high_52 = self._fetch_market_data(selected_stock)
+        
+        # Calculate matrix
+        matrix_df = self._calculate_premium_matrix(ce_data, pe_data, current_price)
+        
+        # Display metrics
+        self._create_metrics_display(current_price, lot_size, low_52, high_52)
+        
+        # Create filters
+        filter_values = self._create_filters(matrix_df, config.table_number)
+        
+        # Display tables
+        self._create_data_tables(ce_data, pe_data, matrix_df, filter_values)
+
+# History Manager
+class HistoryManager:
+    def __init__(self, history_file: str = "history.csv"):
+        self.history_file = history_file
+        self.history_data = self._load_history()
+    
+    def _load_history(self) -> pd.DataFrame:
+        """Load history data with error handling."""
+        try:
+            return pd.read_csv(self.history_file)
+        except Exception as e:
+            logger.error(f"Error loading history: {str(e)}")
+            return pd.DataFrame()
+    
+    def get_last_configuration(self) -> List[TableConfig]:
+        """Get last configuration from history."""
+        if len(self.history_data) <= 1:
+            return self._get_default_configs()
+        
+        try:
+            last_record = self.history_data.tail(1).iloc[0]
+            
+            configs = []
+            for i in range(1, 4):
+                table_key = f'table{i}'
+                exp_key = f'exp{i}'
+                
+                if table_key in last_record and exp_key in last_record:
+                    stock = last_record[table_key]
+                    expiry = last_record[exp_key]
+                    
+                    # Validate expiry date
+                    if expiry not in DATE_LIST:
+                        expiry = EXP_OPTION
+                    
+                    configs.append(TableConfig(i, stock, expiry))
+                else:
+                    configs.append(self._get_default_config(i))
+            
+            return configs
+            
+        except Exception as e:
+            logger.error(f"Error processing history: {e}")
+            return self._get_default_configs()
+    
+    def _get_default_configs(self) -> List[TableConfig]:
+        """Get default configurations."""
+        default_stocks = ['RELIANCE', 'VEDL', 'INFY']
+        return [
+            TableConfig(i+1, stock, EXP_OPTION)
+            for i, stock in enumerate(default_stocks)
+        ]
+    
+    def _get_default_config(self, table_number: int) -> TableConfig:
+        """Get default configuration for a specific table."""
+        default_stocks = ['RELIANCE', 'VEDL', 'INFY']
+        return TableConfig(table_number, default_stocks[table_number-1], EXP_OPTION)
+    
+    def save_configuration(self, configs: List[TableConfig]):
+        """Save current configuration to history."""
+        try:
+            data = {
+                'table1': [configs[0].selected_option],
+                'exp1': [configs[0].exp_option],
+                'table2': [configs[1].selected_option],
+                'exp2': [configs[1].exp_option],
+                'table3': [configs[2].selected_option],
+                'exp3': [configs[2].exp_option],
+                'timestamp': [datetime.datetime.now()]
+            }
+            
+            new_record = pd.DataFrame(data)
+            
+            if len(self.history_data) > 30:
+                new_record.to_csv(self.history_file, index=False, header=True)
+            else:
+                new_record.to_csv(self.history_file, mode='a', index=False, header=False)
+                
+        except Exception as e:
+            logger.error(f"Error saving history: {str(e)}")
+
+# Main application
+def main():
+    """Main application entry point."""
+    st.markdown('## LIVE OPTION CHAIN ANALYSIS (OPTSTK)')
+    
+    # Initialize components
+    history_manager = HistoryManager()
+    dashboard = OptionChainDashboard()
+    
+    # Get configurations
+    configs = history_manager.get_last_configuration()
+    
+    # Render tables
+    for config in configs:
+        dashboard.render_table(config)
+    
+    # Save current configuration
+    history_manager.save_configuration(configs)
+
+if __name__ == "__main__":
+    main()

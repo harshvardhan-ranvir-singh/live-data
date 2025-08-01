@@ -241,7 +241,7 @@ def highlight_ratio(val, column_name):
 
 
 
-@st.experimental_fragment
+@st.fragment
 def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
     st.write("---")
     shares = pd.read_csv("FNO Stocks - All FO Stocks List, Technical Analysis Scanner.csv")
@@ -262,39 +262,58 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
     c1, c2 = st.columns(2)
     with c1:
         st.markdown('##### Share List')
-        selected_option = st.selectbox(label="", options=share_list, key="share_list" + str(table_number), label_visibility='collapsed')
+        selected_option = st.selectbox(label="Select Stock", options=share_list, key="share_list" + str(table_number), label_visibility='collapsed')
         lot_size = shares[shares["Symbol"] == selected_option]['Jun-24'].item()
     with c2:
         st.markdown('##### Expiry List')
-        exp_option = st.selectbox(label="", options=exp_date_list_sel, key="exp_list" + str(table_number), label_visibility='collapsed')
+        exp_option = st.selectbox(label="Select Expiry", options=exp_date_list_sel, key="exp_list" + str(table_number), label_visibility='collapsed')
         if selected_option in share_list:
-            ticker = selected_option
-            output_ce, output_pe = get_dataframe(ticker, exp_option)
-            ########################################## Stock LTP and Matrix #######################################
-            stock_ltp = 0.0
-            for price in current_market_price(ticker, exchange):
-                stock_ltp = price
-                break
-            low_52_week, high_52_week = fifty_two_week_high_low(ticker, exchange)
+            try:
+                ticker = selected_option
+                output_ce, output_pe = get_dataframe(ticker, exp_option)
+                ########################################## Stock LTP and Matrix #######################################
+                stock_ltp = 0.0
+                for price in current_market_price(ticker, exchange):
+                    stock_ltp = price
+                    break
+                low_52_week, high_52_week = fifty_two_week_high_low(ticker, exchange)
+            except Exception as e:
+                st.error(f"Error fetching data for {selected_option}: {str(e)}")
+                # Set default values
+                stock_ltp = 0.0
+                low_52_week = 0.0
+                high_52_week = 0.0
+                output_ce = pd.DataFrame()
+                output_pe = pd.DataFrame()
 
         # ********************************** MATRIX ******************************************
-        l1, l2 = len(output_ce), len(output_pe)
-        if l1 < l2:
-            fin_len = l1
-        else:
-            fin_len = l2
-        matrix = np.zeros((fin_len, 4))
-        df = pd.DataFrame(matrix, columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
+        try:
+            l1, l2 = len(output_ce), len(output_pe)
+            if l1 < l2:
+                fin_len = l1
+            else:
+                fin_len = l2
+            
+            if fin_len > 0 and stock_ltp > 0:
+                matrix = np.zeros((fin_len, 4))
+                df = pd.DataFrame(matrix, columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
 
-        for i in range(len(df)):
-            df.at[i, "CE Premium%"] = round((output_ce["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
-            df.at[i, "CE (Premium+SP)%"] = round(
-                (((output_ce["strikePrice"].iloc[i] - stock_ltp) + output_ce["lastPrice"].iloc[i]) / stock_ltp) * 100,
-                2)
-            df.at[i, "PE Premium%"] = round((output_pe["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
-            df.at[i, "PE (Premium+SP)%"] = round(
-                (((stock_ltp - output_pe["strikePrice"].iloc[i]) + output_pe["lastPrice"].iloc[i]) / stock_ltp) * 100,
-                2)
+                for i in range(len(df)):
+                    if i < len(output_ce) and i < len(output_pe):
+                        df.at[i, "CE Premium%"] = round((output_ce["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
+                        df.at[i, "CE (Premium+SP)%"] = round(
+                            (((output_ce["strikePrice"].iloc[i] - stock_ltp) + output_ce["lastPrice"].iloc[i]) / stock_ltp) * 100,
+                            2)
+                        df.at[i, "PE Premium%"] = round((output_pe["lastPrice"].iloc[i] / stock_ltp) * 100, 2)
+                        df.at[i, "PE (Premium+SP)%"] = round(
+                            (((stock_ltp - output_pe["strikePrice"].iloc[i]) + output_pe["lastPrice"].iloc[i]) / stock_ltp) * 100,
+                            2)
+            else:
+                # Create empty dataframe if no data
+                df = pd.DataFrame(columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
+        except Exception as e:
+            st.error(f"Error calculating matrix: {str(e)}")
+            df = pd.DataFrame(columns=["CE Premium%", "CE (Premium+SP)%", "PE Premium%", "PE (Premium+SP)%"])
         # ************************************************************************************
     d1, d2, d3, d4, d5, d6 = st.columns(6)
     with d1:
@@ -345,23 +364,37 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
 
 
     col1, col2, col3, col4 = st.columns(4)
-    df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
-    df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
-    df_ce = df_ce[(df_ce['CE Premium%'] >= ls[0]) & (df_ce['CE (Premium+SP)%'] >= ls[1])]
-    df_pe = df_pe[(df_pe['PE Premium%'] >= ls[2]) & (df_pe['PE (Premium+SP)%'] >= ls[3])]
-    #df = df[(df['CE Premium%'] >= ls[0]) & (df['CE (Premium+SP)%'] >= ls[1]) & (df['PE Premium%'] >= ls[2]) & (df['PE (Premium+SP)%'] >= ls[3])]
-    df_ce_index = df_ce.index
-    output_ce = output_ce.loc[df_ce_index]
-    df_pe_index = df_pe.index
-    output_pe = output_pe.loc[df_pe_index]
+    try:
+        df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
+        df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
+        df_ce = df_ce[(df_ce['CE Premium%'] >= ls[0]) & (df_ce['CE (Premium+SP)%'] >= ls[1])]
+        df_pe = df_pe[(df_pe['PE Premium%'] >= ls[2]) & (df_pe['PE (Premium+SP)%'] >= ls[3])]
+        #df = df[(df['CE Premium%'] >= ls[0]) & (df['CE (Premium+SP)%'] >= ls[1]) & (df['PE Premium%'] >= ls[2]) & (df['PE (Premium+SP)%'] >= ls[3])]
+        df_ce_index = df_ce.index
+        output_ce = output_ce.loc[df_ce_index]
+        df_pe_index = df_pe.index
+        output_pe = output_pe.loc[df_pe_index]
+    except Exception as e:
+        st.error(f"Error filtering data: {str(e)}")
+        df_ce = pd.DataFrame(columns=['CE Premium%', 'CE (Premium+SP)%'])
+        df_pe = pd.DataFrame(columns=['PE Premium%', 'PE (Premium+SP)%'])
+        output_ce = pd.DataFrame()
+        output_pe = pd.DataFrame()
     with col1:
-        output_ce = output_ce.rename(columns={'strikePrice': 'Strike Price',
-                                              'expiryDate': 'Expiry Date',
-                                              'lastPrice': 'Last Price',
-                                              'instrumentType': 'Type'})
-        output_ce = output_ce.style.set_properties(**{'text-align': 'center', 'background-color': 'palegreen'}).set_table_styles(
-            [{'selector': 'th', 'props': [('text-align', 'center')]}])
-        output_ce = output_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        try:
+            if not output_ce.empty:
+                output_ce = output_ce.rename(columns={'strikePrice': 'Strike Price',
+                                                      'expiryDate': 'Expiry Date',
+                                                      'lastPrice': 'Last Price',
+                                                      'instrumentType': 'Type'})
+                output_ce = output_ce.style.set_properties(**{'text-align': 'center', 'background-color': 'palegreen'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
+                output_ce = output_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+            else:
+                output_ce = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
+        except Exception as e:
+            st.error(f"Error displaying CE data: {str(e)}")
+            output_ce = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
         responsive_css = """
             <style>
@@ -397,13 +430,18 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
         #st.write(output_ce.to_html(escape=False), unsafe_allow_html=True)
         st.dataframe(output_ce)
     with col2:
-        # df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
-        df_ce = df_ce.style.applymap(lambda val: highlight_ratio(val, 'CE Premium%'), subset=['CE Premium%'])
-        df_ce = df_ce.applymap(lambda val: highlight_ratio(val, 'CE (Premium+SP)%'), subset=['CE (Premium+SP)%'])
-        df_ce = df_ce.set_properties(
-            **{'text-align': 'center'}).set_table_styles(
-            [{'selector': 'th', 'props': [('text-align', 'center')]}])
-        df_ce = df_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        try:
+            if not df_ce.empty:
+                # df_ce = df[['CE Premium%', 'CE (Premium+SP)%']]
+                df_ce = df_ce.style.applymap(lambda val: highlight_ratio(val, 'CE Premium%'), subset=['CE Premium%'])
+                df_ce = df_ce.applymap(lambda val: highlight_ratio(val, 'CE (Premium+SP)%'), subset=['CE (Premium+SP)%'])
+                df_ce = df_ce.set_properties(
+                    **{'text-align': 'center'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
+                df_ce = df_ce.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        except Exception as e:
+            st.error(f"Error displaying CE premium data: {str(e)}")
+            df_ce = pd.DataFrame(columns=['CE Premium%', 'CE (Premium+SP)%'])
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
         responsive_css = """
                     <style>
@@ -439,14 +477,21 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
         #st.write(df_ce.to_html(escape=False), unsafe_allow_html=True)
         st.dataframe(df_ce)
     with col3:
-        output_pe = output_pe.rename(columns={'strikePrice': 'Strike Price',
-                                              'expiryDate': 'Expiry Date',
-                                              'lastPrice': 'Last Price',
-                                              'instrumentType': 'Type'})
-        output_pe = output_pe.style.set_properties(
-            **{'text-align': 'center', 'background-color': 'antiquewhite'}).set_table_styles(
-            [{'selector': 'th', 'props': [('text-align', 'center')]}])
-        output_pe = output_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        try:
+            if not output_pe.empty:
+                output_pe = output_pe.rename(columns={'strikePrice': 'Strike Price',
+                                                      'expiryDate': 'Expiry Date',
+                                                      'lastPrice': 'Last Price',
+                                                      'instrumentType': 'Type'})
+                output_pe = output_pe.style.set_properties(
+                    **{'text-align': 'center', 'background-color': 'antiquewhite'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
+                output_pe = output_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+            else:
+                output_pe = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
+        except Exception as e:
+            st.error(f"Error displaying PE data: {str(e)}")
+            output_pe = pd.DataFrame(columns=['Strike Price', 'Expiry Date', 'Last Price', 'Type'])
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
         responsive_css = """
                     <style>
@@ -482,13 +527,18 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
         #st.write(output_pe.to_html(escape=False), unsafe_allow_html=True)
         st.dataframe(output_pe)
     with col4:
-        # df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
-        df_pe = df_pe.style.applymap(lambda val: highlight_ratio(val, 'PE Premium%'), subset=['PE Premium%'])
-        df_pe = df_pe.applymap(lambda val: highlight_ratio(val, 'PE (Premium+SP)%'), subset=['PE (Premium+SP)%'])
-        df_pe = df_pe.set_properties(
-            **{'text-align': 'center'}).set_table_styles(
-            [{'selector': 'th', 'props': [('text-align', 'center')]}])
-        df_pe = df_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        try:
+            if not df_pe.empty:
+                # df_pe = df[['PE Premium%', 'PE (Premium+SP)%']]
+                df_pe = df_pe.style.applymap(lambda val: highlight_ratio(val, 'PE Premium%'), subset=['PE Premium%'])
+                df_pe = df_pe.applymap(lambda val: highlight_ratio(val, 'PE (Premium+SP)%'), subset=['PE (Premium+SP)%'])
+                df_pe = df_pe.set_properties(
+                    **{'text-align': 'center'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}])
+                df_pe = df_pe.format({'Last Price': "{:.2f}".format, 'Strike Price': "{:.1f}".format})
+        except Exception as e:
+            st.error(f"Error displaying PE premium data: {str(e)}")
+            df_pe = pd.DataFrame(columns=['PE Premium%', 'PE (Premium+SP)%'])
         st.markdown('<style>.col_heading{text-align: center}</style>', unsafe_allow_html=True)
         responsive_css = """
                             <style>
@@ -526,32 +576,55 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
 
 
 
-    if ('share_list2' in st.session_state) and ('share_list3' in st.session_state):
-        curr = pd.DataFrame({'table1': [st.session_state["share_list1"]],
-                             'exp1': [st.session_state["exp_list1"]],
-                             'table2': [st.session_state["share_list2"]],
-                             'exp2': [st.session_state["exp_list2"]],
-                             'table3': [st.session_state["share_list3"]],
-                             'exp3': [st.session_state["exp_list3"]],
-                             'timestamp': [datetime.datetime.now()]
-                             })
-        if len(hist_df) > 30:
-            curr.to_csv('history.csv', mode='w', index=False, header=True)
-        else:
-            curr.to_csv('history.csv', mode='a', index=False, header=False)
+    try:
+        if ('share_list2' in st.session_state) and ('share_list3' in st.session_state):
+            curr = pd.DataFrame({'table1': [st.session_state["share_list1"]],
+                                 'exp1': [st.session_state["exp_list1"]],
+                                 'table2': [st.session_state["share_list2"]],
+                                 'exp2': [st.session_state["exp_list2"]],
+                                 'table3': [st.session_state["share_list3"]],
+                                 'exp3': [st.session_state["exp_list3"]],
+                                 'timestamp': [datetime.datetime.now()]
+                                 })
+            if len(hist_df) > 30:
+                curr.to_csv('history.csv', mode='w', index=False, header=True)
+            else:
+                curr.to_csv('history.csv', mode='a', index=False, header=False)
+    except Exception as e:
+        st.error(f"Error saving history: {str(e)}")
     st.write("---")
 st.markdown('## LIVE OPTION CHAIN ANALYSIS (OPTSTK)')
-hist = pd.read_csv("history.csv")
-hist_df = pd.DataFrame(hist)
-
-print(len(hist_df))
+try:
+    hist = pd.read_csv("history.csv")
+    hist_df = pd.DataFrame(hist)
+    print(len(hist_df))
+except Exception as e:
+    st.error(f"Error loading history: {str(e)}")
+    hist_df = pd.DataFrame()
+    print("Created empty history dataframe")
 
 if len(hist_df) > 1:
     last_rec = hist_df.tail(1)
     print(last_rec)
-    frag_table(1, last_rec['table1'].item(), last_rec['exp1'].item())
-    frag_table(2, last_rec['table2'].item(), last_rec['exp2'].item())
-    frag_table(3, last_rec['table3'].item(), last_rec['exp3'].item())
+    try:
+        # Check if the expiry date from history is valid for current dates
+        hist_exp1 = last_rec['exp1'].item()
+        hist_exp2 = last_rec['exp2'].item()
+        hist_exp3 = last_rec['exp3'].item()
+        
+        # Use history data if dates are valid, otherwise use defaults
+        exp1 = hist_exp1 if hist_exp1 in DATE_LIST else EXP_OPTION
+        exp2 = hist_exp2 if hist_exp2 in DATE_LIST else EXP_OPTION
+        exp3 = hist_exp3 if hist_exp3 in DATE_LIST else EXP_OPTION
+        
+        frag_table(1, last_rec['table1'].item(), exp1)
+        frag_table(2, last_rec['table2'].item(), exp2)
+        frag_table(3, last_rec['table3'].item(), exp3)
+    except Exception as e:
+        print(f"Error loading history: {e}")
+        frag_table(1, 'RELIANCE')
+        frag_table(2, 'VEDL')
+        frag_table(3, 'INFY')
 else:
     frag_table(1, 'RELIANCE')
     frag_table(2, 'VEDL')

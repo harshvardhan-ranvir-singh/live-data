@@ -70,41 +70,68 @@ EXP_OPTION = DATE_LIST[0]
 def current_market_price(ticker, exchange):
     url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
 
-    for _ in range(1000000):
-        response = requests.get(url)
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            raise Exception(f"Google Finance API returned status code: {response.status_code}")
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         class1 = "YMlKec fxKbKc"
 
-        price = float(soup.find(class_=class1).text.strip()[1:].replace(",", ""))
+        price_element = soup.find(class_=class1)
+        if price_element is None:
+            raise Exception("Price element not found in Google Finance page")
+            
+        price = float(price_element.text.strip()[1:].replace(",", ""))
         yield price
 
-        time.sleep(5)
+    except Exception as e:
+        print(f"Error fetching price for {ticker}: {str(e)}")
+        # Return a default price to prevent app crash
+        yield 0.0
 
 def fifty_two_week_high_low(ticker, exchange):
     url = f"https://www.google.com/finance/quote/{ticker}:{exchange}"
 
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    class1 = "P6K39c"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            raise Exception(f"Google Finance API returned status code: {response.status_code}")
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        class1 = "P6K39c"
 
-    price = soup.find_all(class_=class1)[2].text
-    low_52_week = float(price.split("-")[0].strip()[1:].replace(",", ""))
-    high_52_week = float(price.split("-")[1].strip()[1:].replace(",", ""))
-    return low_52_week, high_52_week
+        price_elements = soup.find_all(class_=class1)
+        if len(price_elements) < 3:
+            raise Exception("52-week high/low data not found")
+            
+        price = price_elements[2].text
+        low_52_week = float(price.split("-")[0].strip()[1:].replace(",", ""))
+        high_52_week = float(price.split("-")[1].strip()[1:].replace(",", ""))
+        return low_52_week, high_52_week
+        
+    except Exception as e:
+        print(f"Error fetching 52-week data for {ticker}: {str(e)}")
+        # Return default values to prevent app crash
+        return 0.0, 0.0
 
 
 def get_dataframe(ticker, exp_date_selected):
-    while True:
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             headers = {
                 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
 
             main_url = "https://www.nseindia.com/"
-            response = requests.get(main_url, headers=headers)
+            response = requests.get(main_url, headers=headers, timeout=10)
             cookies = response.cookies
 
             url = f"https://www.nseindia.com/api/option-chain-equities?symbol={ticker}"
-            option_chain_data = requests.get(url, headers=headers, cookies=cookies)
+            option_chain_data = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+
+            if option_chain_data.status_code != 200:
+                raise Exception(f"API returned status code: {option_chain_data.status_code}")
 
             data = option_chain_data.json()["records"]["data"]
             ocdata = []
@@ -219,7 +246,11 @@ def get_dataframe(ticker, exp_date_selected):
             return output_ce, output_pe
 
         except Exception as e:
-            pass
+            print(f"Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+            if attempt == max_retries - 1:
+                print(f"All attempts failed for {ticker}, returning empty dataframes")
+                return pd.DataFrame(), pd.DataFrame()
+            time.sleep(2)  # Wait before retry
 
 
 def highlight_ratio(val, column_name):
@@ -586,6 +617,8 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
                                  'exp3': [st.session_state["exp_list3"]],
                                  'timestamp': [datetime.datetime.now()]
                                  })
+            # Use global hist_df variable
+            global hist_df
             if len(hist_df) > 30:
                 curr.to_csv('history.csv', mode='w', index=False, header=True)
             else:
@@ -593,7 +626,12 @@ def frag_table(table_number, selected_option='UBL', exp_option=EXP_OPTION):
     except Exception as e:
         st.error(f"Error saving history: {str(e)}")
     st.write("---")
+
+
+
 st.markdown('## LIVE OPTION CHAIN ANALYSIS (OPTSTK)')
+
+# Load history data BEFORE calling frag_table functions
 try:
     hist = pd.read_csv("history.csv")
     hist_df = pd.DataFrame(hist)
